@@ -1,0 +1,1150 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.Serialization.Formatters.Binary;
+using System.Runtime.Versioning;
+using System.Security;
+using System.Security.Permissions;
+using BepInEx;
+using BepInEx.Bootstrap;
+using BepInEx.Logging;
+using GameNetcodeStuff;
+using HoarderBud.Components;
+using HoarderBud.Patches;
+using LethalLib.Modules;
+using Microsoft.CodeAnalysis;
+using On;
+using On.GameNetcodeStuff;
+using Unity.Collections;
+using Unity.Netcode;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+[assembly: CompilationRelaxations(8)]
+[assembly: RuntimeCompatibility(WrapNonExceptionThrows = true)]
+[assembly: Debuggable(DebuggableAttribute.DebuggingModes.Default | DebuggableAttribute.DebuggingModes.DisableOptimizations | DebuggableAttribute.DebuggingModes.IgnoreSymbolStoreSequencePoints | DebuggableAttribute.DebuggingModes.EnableEditAndContinue)]
+[assembly: TargetFramework(".NETStandard,Version=v2.1", FrameworkDisplayName = ".NET Standard 2.1")]
+[assembly: AssemblyCompany("HoarderBud")]
+[assembly: AssemblyConfiguration("Debug")]
+[assembly: AssemblyDescription("HoarderBud plugin")]
+[assembly: AssemblyFileVersion("1.0.12.0")]
+[assembly: AssemblyInformationalVersion("1.0.12")]
+[assembly: AssemblyProduct("HoarderBud")]
+[assembly: AssemblyTitle("HoarderBud")]
+[assembly: SecurityPermission(SecurityAction.RequestMinimum, SkipVerification = true)]
+[assembly: SecurityPermission(SecurityAction.RequestMinimum, SkipVerification = true)]
+[assembly: AssemblyVersion("1.0.12.0")]
+[module: UnverifiableCode]
+[module: RefSafetyRules(11)]
+namespace Microsoft.CodeAnalysis
+{
+	[CompilerGenerated]
+	[Microsoft.CodeAnalysis.Embedded]
+	internal sealed class EmbeddedAttribute : Attribute
+	{
+	}
+}
+namespace System.Runtime.CompilerServices
+{
+	[CompilerGenerated]
+	[Microsoft.CodeAnalysis.Embedded]
+	[AttributeUsage(AttributeTargets.Module, AllowMultiple = false, Inherited = false)]
+	internal sealed class RefSafetyRulesAttribute : Attribute
+	{
+		public readonly int Version;
+
+		public RefSafetyRulesAttribute(int P_0)
+		{
+			Version = P_0;
+		}
+	}
+}
+namespace HoarderBud
+{
+	[BepInPlugin("HoarderBud", "HoarderBud", "1.0.12")]
+	public class HoarderBudPlugin : BaseUnityPlugin
+	{
+		[Serializable]
+		internal class ConfigPayload
+		{
+			public bool ShouldBugsDance = true;
+
+			public float DanceAmplitude = 0.7f;
+
+			public float DanceSpeed = 4f;
+
+			public bool MakeBugsFriendly = true;
+
+			public bool MakeBugsGatherAtMainEntrance = true;
+
+			public bool DisableOutsideEnemies = false;
+
+			public bool DisableInsideEnemies = true;
+
+			public bool OpenAllDoors = true;
+
+			public bool AddSpawnerItem = true;
+
+			public int SpawnerItemPrice = 30;
+		}
+
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_PerformEmote <0>__PlayerControllerB_PerformEmote;
+
+			public static HandleNamedMessageDelegate <1>__OnRequestSync;
+
+			public static HandleNamedMessageDelegate <2>__OnReceiveSync;
+		}
+
+		public static ManualLogSource mls;
+
+		internal static bool IsSynced;
+
+		internal static GameObject LootBugModel;
+
+		public static bool HasLethalEscape;
+
+		internal static CustomMessagingManager MessageManager => NetworkManager.Singleton.CustomMessagingManager;
+
+		internal static bool IsClient => NetworkManager.Singleton.IsClient;
+
+		internal static bool IsHost => NetworkManager.Singleton.IsHost;
+
+		private void Awake()
+		{
+			//IL_003a: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0044: Expected O, but got Unknown
+			//IL_004c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0056: Expected O, but got Unknown
+			//IL_0022: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0027: Unknown result type (might be due to invalid IL or missing references)
+			//IL_002d: Expected O, but got Unknown
+			mls = ((BaseUnityPlugin)this).Logger;
+			HoarderBugPatches.Apply();
+			object obj = <>O.<0>__PlayerControllerB_PerformEmote;
+			if (obj == null)
+			{
+				hook_PerformEmote val = PlayerControllerB_PerformEmote;
+				<>O.<0>__PlayerControllerB_PerformEmote = val;
+				obj = (object)val;
+			}
+			PlayerControllerB.PerformEmote += (hook_PerformEmote)obj;
+			GameNetworkManager.StartDisconnect += new hook_StartDisconnect(LoadConfigOnDisconnect);
+			PlayerControllerB.ConnectClientToPlayerObject += new hook_ConnectClientToPlayerObject(AttachNetworkManager);
+			BoomboxPatches.Apply();
+			RemoveOutsideMobsPatches.Apply();
+			RemoveInsideMobsPatches.Apply();
+			OpenAllDoorsPatches.Apply();
+			HoarderBudSpawnerPatches.Apply();
+			ApplyLocalSettings();
+			mls.LogInfo((object)"Plugin HoarderBud is loaded!");
+		}
+
+		private void LoadConfigOnDisconnect(orig_StartDisconnect orig, GameNetworkManager self)
+		{
+			orig.Invoke(self);
+			ApplyLocalSettings();
+			IsSynced = false;
+			MessageManager.UnregisterNamedMessageHandler("HoarderBud_OnRequestConfigSync");
+			MessageManager.UnregisterNamedMessageHandler("HoarderBud_OnReceiveConfigSync");
+		}
+
+		private void AttachNetworkManager(orig_ConnectClientToPlayerObject orig, PlayerControllerB self)
+		{
+			//IL_007a: Unknown result type (might be due to invalid IL or missing references)
+			//IL_007f: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0085: Expected O, but got Unknown
+			//IL_0041: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0046: Unknown result type (might be due to invalid IL or missing references)
+			//IL_004c: Expected O, but got Unknown
+			orig.Invoke(self);
+			HasLethalEscape = Chainloader.PluginInfos.ContainsKey("xCeezy.LethalEscape");
+			if (IsHost)
+			{
+				CustomMessagingManager messageManager = MessageManager;
+				object obj = <>O.<1>__OnRequestSync;
+				if (obj == null)
+				{
+					HandleNamedMessageDelegate val = OnRequestSync;
+					<>O.<1>__OnRequestSync = val;
+					obj = (object)val;
+				}
+				messageManager.RegisterNamedMessageHandler("HoarderBud_OnRequestConfigSync", (HandleNamedMessageDelegate)obj);
+				IsSynced = true;
+				return;
+			}
+			IsSynced = false;
+			CustomMessagingManager messageManager2 = MessageManager;
+			object obj2 = <>O.<2>__OnReceiveSync;
+			if (obj2 == null)
+			{
+				HandleNamedMessageDelegate val2 = OnReceiveSync;
+				<>O.<2>__OnReceiveSync = val2;
+				obj2 = (object)val2;
+			}
+			messageManager2.RegisterNamedMessageHandler("HoarderBud_OnReceiveConfigSync", (HandleNamedMessageDelegate)obj2);
+			RequestSync();
+		}
+
+		public static void RequestSync()
+		{
+			//IL_0025: Unknown result type (might be due to invalid IL or missing references)
+			if (!IsClient)
+			{
+				return;
+			}
+			FastBufferWriter val = default(FastBufferWriter);
+			((FastBufferWriter)(ref val))..ctor(4, (Allocator)2, -1);
+			try
+			{
+				MessageManager.SendNamedMessage("HoarderBud_OnRequestConfigSync", 0uL, val, (NetworkDelivery)3);
+			}
+			finally
+			{
+				((IDisposable)(FastBufferWriter)(ref val)).Dispose();
+			}
+		}
+
+		public static void OnRequestSync(ulong clientId, FastBufferReader _)
+		{
+			//IL_004a: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0050: Unknown result type (might be due to invalid IL or missing references)
+			//IL_006e: Unknown result type (might be due to invalid IL or missing references)
+			if (!IsHost)
+			{
+				return;
+			}
+			mls.LogInfo((object)$"Config sync request received from client: {clientId}");
+			byte[] array = SerializeToBytes();
+			int num = array.Length;
+			FastBufferWriter val = default(FastBufferWriter);
+			((FastBufferWriter)(ref val))..ctor(num + 4, (Allocator)2, -1);
+			try
+			{
+				((FastBufferWriter)(ref val)).WriteValueSafe<int>(ref num, default(ForPrimitives));
+				((FastBufferWriter)(ref val)).WriteBytesSafe(array, -1, 0);
+				MessageManager.SendNamedMessage("HoarderBud_OnReceiveConfigSync", clientId, val, (NetworkDelivery)3);
+			}
+			catch (Exception arg)
+			{
+				mls.LogInfo((object)$"Error occurred syncing config with client: {clientId}\n{arg}");
+			}
+			finally
+			{
+				((IDisposable)(FastBufferWriter)(ref val)).Dispose();
+			}
+		}
+
+		public static void OnReceiveSync(ulong _, FastBufferReader reader)
+		{
+			//IL_0029: Unknown result type (might be due to invalid IL or missing references)
+			//IL_002f: Unknown result type (might be due to invalid IL or missing references)
+			if (!((FastBufferReader)(ref reader)).TryBeginRead(4))
+			{
+				mls.LogError((object)"Config sync error: Could not begin reading buffer.");
+				return;
+			}
+			int num = default(int);
+			((FastBufferReader)(ref reader)).ReadValueSafe<int>(ref num, default(ForPrimitives));
+			if (!((FastBufferReader)(ref reader)).TryBeginRead(num))
+			{
+				mls.LogError((object)"Config sync error: Host could not sync.");
+				return;
+			}
+			byte[] data = new byte[num];
+			((FastBufferReader)(ref reader)).ReadBytesSafe(ref data, num, 0);
+			ParsePacket(data);
+			mls.LogInfo((object)"Successfully synced config with host.");
+		}
+
+		private static byte[] SerializeToBytes()
+		{
+			ConfigPayload graph = new ConfigPayload
+			{
+				ShouldBugsDance = BoomboxPatches.enabled,
+				DanceAmplitude = BoomboxPatches.amplitude,
+				DanceSpeed = BoomboxPatches.danceSpeed,
+				MakeBugsFriendly = HoarderBugPatches.MakeBugsFriendly,
+				MakeBugsGatherAtMainEntrance = HoarderBugPatches.MakeBugsGatherAtMainEntrance,
+				DisableOutsideEnemies = RemoveOutsideMobsPatches.enabled,
+				DisableInsideEnemies = RemoveInsideMobsPatches.enabled,
+				OpenAllDoors = OpenAllDoorsPatches.enabled,
+				AddSpawnerItem = HoarderBudSpawnerPatches.enabled,
+				SpawnerItemPrice = HoarderBudSpawnerPatches.SpawnerItemPrice
+			};
+			BinaryFormatter binaryFormatter = new BinaryFormatter();
+			using MemoryStream memoryStream = new MemoryStream();
+			binaryFormatter.Serialize(memoryStream, graph);
+			return memoryStream.ToArray();
+		}
+
+		private static void ParsePacket(byte[] data)
+		{
+			using MemoryStream memoryStream = new MemoryStream();
+			BinaryFormatter binaryFormatter = new BinaryFormatter();
+			memoryStream.Write(data, 0, data.Length);
+			memoryStream.Seek(0L, SeekOrigin.Begin);
+			ConfigPayload configPayload = (ConfigPayload)binaryFormatter.Deserialize(memoryStream);
+			BoomboxPatches.enabled = configPayload.ShouldBugsDance;
+			BoomboxPatches.amplitude = configPayload.DanceAmplitude;
+			BoomboxPatches.danceSpeed = configPayload.DanceSpeed;
+			HoarderBugPatches.MakeBugsFriendly = configPayload.MakeBugsFriendly;
+			HoarderBugPatches.MakeBugsGatherAtMainEntrance = configPayload.MakeBugsGatherAtMainEntrance;
+			RemoveOutsideMobsPatches.enabled = configPayload.DisableOutsideEnemies;
+			RemoveInsideMobsPatches.enabled = configPayload.DisableInsideEnemies;
+			OpenAllDoorsPatches.enabled = configPayload.OpenAllDoors;
+			HoarderBudSpawnerPatches.enabled = configPayload.AddSpawnerItem;
+			HoarderBudSpawnerPatches.SpawnerItemPrice = configPayload.SpawnerItemPrice;
+			HoarderBudSpawnerPatches.UpdateItem();
+			IsSynced = true;
+			mls.LogInfo((object)"Config: Loaded remote config");
+			DumpConfig();
+		}
+
+		private void ApplyLocalSettings()
+		{
+			BoomboxPatches.enabled = ((BaseUnityPlugin)this).Config.Bind<bool>("Boombox", "ShouldBugsDance", true, "Should hoarder bugs dance when music is playing?").Value;
+			BoomboxPatches.amplitude = ((BaseUnityPlugin)this).Config.Bind<float>("Boombox", "DanceAmplitude", 0.7f, "Dance amplitude").Value;
+			BoomboxPatches.danceSpeed = ((BaseUnityPlugin)this).Config.Bind<float>("Boombox", "DanceSpeed", 4f, "Dance speed").Value;
+			HoarderBugPatches.MakeBugsFriendly = ((BaseUnityPlugin)this).Config.Bind<bool>("General", "MakeBugsFriendly", true, "Makes hoarder bugs not attack you").Value;
+			HoarderBugPatches.MakeBugsGatherAtMainEntrance = ((BaseUnityPlugin)this).Config.Bind<bool>("General", "MakeBugsGatherAtMainEntrance", true, "Makes hoarder bugs nest near the main entrance").Value;
+			RemoveOutsideMobsPatches.enabled = ((BaseUnityPlugin)this).Config.Bind<bool>("General", "DisableOutsideEnemies", false, "Disables all outside enemies").Value;
+			RemoveInsideMobsPatches.enabled = ((BaseUnityPlugin)this).Config.Bind<bool>("General", "DisableInsideEnemies", true, "Disables all inside enemies except for Hoarder Buddy, also increases his spawnrate").Value;
+			OpenAllDoorsPatches.enabled = ((BaseUnityPlugin)this).Config.Bind<bool>("General", "OpenAllDoors", true, "Starts game with all the inside doors open").Value;
+			HoarderBudSpawnerPatches.enabled = ((BaseUnityPlugin)this).Config.Bind<bool>("General", "AddSpawnerItem", true, "Adds a throwable HoarderBug egg").Value;
+			HoarderBudSpawnerPatches.SpawnerItemPrice = ((BaseUnityPlugin)this).Config.Bind<int>("General", "SpawnerItemPrice", 30, "Throwable HoarderBug egg price").Value;
+			HoarderBudSpawnerPatches.UpdateItem();
+			mls.LogInfo((object)"Config: Loaded local config");
+			DumpConfig();
+		}
+
+		private static void DumpConfig()
+		{
+			mls.LogInfo((object)("Config: ShouldBugsDance - " + BoomboxPatches.enabled));
+			mls.LogInfo((object)("Config: DanceAmplitude - " + BoomboxPatches.amplitude));
+			mls.LogInfo((object)("Config: DanceSpeed - " + BoomboxPatches.danceSpeed));
+			mls.LogInfo((object)("Config: MakeBugsFriendly - " + HoarderBugPatches.MakeBugsFriendly));
+			mls.LogInfo((object)("Config: MakeBugsGatherAtMainEntrance - " + HoarderBugPatches.MakeBugsGatherAtMainEntrance));
+			mls.LogInfo((object)("Config: DisableOutsideEnemies - " + RemoveOutsideMobsPatches.enabled));
+			mls.LogInfo((object)("Config: DisableInsideEnemies - " + RemoveInsideMobsPatches.enabled));
+			mls.LogInfo((object)("Config: OpenAllDoors - " + OpenAllDoorsPatches.enabled));
+			mls.LogInfo((object)("Config: AddSpawnerItem - " + HoarderBudSpawnerPatches.enabled));
+			mls.LogInfo((object)("Config: SpawnerItemPrice - " + HoarderBudSpawnerPatches.SpawnerItemPrice));
+		}
+
+		private static void PlayerControllerB_PerformEmote(orig_PerformEmote orig, PlayerControllerB self, CallbackContext context, int emoteID)
+		{
+			//IL_0011: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0016: Unknown result type (might be due to invalid IL or missing references)
+			//IL_002a: Unknown result type (might be due to invalid IL or missing references)
+			//IL_002f: Unknown result type (might be due to invalid IL or missing references)
+			//IL_004a: Unknown result type (might be due to invalid IL or missing references)
+			ManualLogSource obj = mls;
+			Vector3 val = ((Component)self).transform.position;
+			string? text = ((object)(Vector3)(ref val)).ToString();
+			val = self.serverPlayerPosition;
+			obj.LogDebug((object)("Player pos: " + text + "|" + ((object)(Vector3)(ref val)).ToString()));
+			orig.Invoke(self, context, emoteID);
+		}
+	}
+	public static class PluginInfo
+	{
+		public const string PLUGIN_GUID = "HoarderBud";
+
+		public const string PLUGIN_NAME = "HoarderBud";
+
+		public const string PLUGIN_VERSION = "1.0.12";
+	}
+}
+namespace HoarderBud.Patches
+{
+	internal class HoarderMusicFlag : MonoBehaviour
+	{
+		public bool canHearMusic = false;
+	}
+	internal class BoomboxPatches
+	{
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_Update <0>__UpdateDance;
+
+			public static hook_Update <1>__RoundManager_Update;
+
+			public static hook_DetectNoise <2>__HoarderBugAI_DetectNoise;
+		}
+
+		public static bool enabled = true;
+
+		private static readonly float startingY = 1.5863f;
+
+		private static float t = 0f;
+
+		private static float direction = 1f;
+
+		public static float amplitude = 0.7f;
+
+		public static float danceSpeed = 4f;
+
+		public static void Apply()
+		{
+			//IL_0011: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0016: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001c: Expected O, but got Unknown
+			//IL_0032: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0037: Unknown result type (might be due to invalid IL or missing references)
+			//IL_003d: Expected O, but got Unknown
+			//IL_0053: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0058: Unknown result type (might be due to invalid IL or missing references)
+			//IL_005e: Expected O, but got Unknown
+			object obj = <>O.<0>__UpdateDance;
+			if (obj == null)
+			{
+				hook_Update val = UpdateDance;
+				<>O.<0>__UpdateDance = val;
+				obj = (object)val;
+			}
+			HoarderBugAI.Update += (hook_Update)obj;
+			object obj2 = <>O.<1>__RoundManager_Update;
+			if (obj2 == null)
+			{
+				hook_Update val2 = RoundManager_Update;
+				<>O.<1>__RoundManager_Update = val2;
+				obj2 = (object)val2;
+			}
+			RoundManager.Update += (hook_Update)obj2;
+			object obj3 = <>O.<2>__HoarderBugAI_DetectNoise;
+			if (obj3 == null)
+			{
+				hook_DetectNoise val3 = HoarderBugAI_DetectNoise;
+				<>O.<2>__HoarderBugAI_DetectNoise = val3;
+				obj3 = (object)val3;
+			}
+			HoarderBugAI.DetectNoise += (hook_DetectNoise)obj3;
+		}
+
+		private static void HoarderBugAI_DetectNoise(orig_DetectNoise orig, HoarderBugAI self, Vector3 noisePosition, float noiseLoudness, int timesPlayedInOneSpot, int noiseID)
+		{
+			//IL_0003: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0087: Unknown result type (might be due to invalid IL or missing references)
+			//IL_008c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00a4: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00a9: Unknown result type (might be due to invalid IL or missing references)
+			orig.Invoke(self, noisePosition, noiseLoudness, timesPlayedInOneSpot, noiseID);
+			if (enabled)
+			{
+				HoarderMusicFlag hoarderMusicFlag = default(HoarderMusicFlag);
+				if (!((Component)self).gameObject.TryGetComponent<HoarderMusicFlag>(ref hoarderMusicFlag))
+				{
+					HoarderBudPlugin.mls.LogDebug((object)"Flag is null, assigning");
+					((Component)self).gameObject.AddComponent<HoarderMusicFlag>();
+				}
+				hoarderMusicFlag = ((Component)self).gameObject.GetComponent<HoarderMusicFlag>();
+				if ((Object)(object)hoarderMusicFlag == (Object)null)
+				{
+					HoarderBudPlugin.mls.LogDebug((object)"Flag is null even after assigning, shouldnt be happening");
+				}
+				else if (noiseID == 5 && !Physics.Linecast(((Component)self).transform.position, noisePosition, StartOfRound.Instance.collidersAndRoomMask) && Vector3.Distance(((Component)self).transform.position, noisePosition) < 12f)
+				{
+					hoarderMusicFlag.canHearMusic = true;
+					HoarderBudPlugin.mls.LogDebug((object)"Can hear music assigned");
+				}
+				else
+				{
+					hoarderMusicFlag.canHearMusic = false;
+					HoarderBudPlugin.mls.LogDebug((object)"Cant hear music assigned");
+				}
+			}
+		}
+
+		private static void RoundManager_Update(orig_Update orig, RoundManager self)
+		{
+			orig.Invoke(self);
+			if (enabled)
+			{
+				t += danceSpeed * Time.deltaTime * direction;
+				if (t > 1f)
+				{
+					direction *= -1f;
+					t = 1f;
+				}
+				else if (t < 0f)
+				{
+					direction *= -1f;
+					t = 0f;
+				}
+			}
+		}
+
+		private static void UpdateDance(orig_Update orig, HoarderBugAI self)
+		{
+			//IL_0079: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00ae: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00b8: Unknown result type (might be due to invalid IL or missing references)
+			orig.Invoke(self);
+			if (enabled)
+			{
+				Transform val = ((Component)self).gameObject.transform.Find("HoarderBugModel").Find("AnimContainer").Find("Armature")
+					.Find("Abdomen")
+					.Find("Chest");
+				HoarderMusicFlag component = ((Component)self).gameObject.GetComponent<HoarderMusicFlag>();
+				bool flag = (Object)(object)component != (Object)null && component.canHearMusic;
+				val.localPosition = new Vector3(val.localPosition.x, flag ? Mathf.Lerp(startingY - amplitude, startingY + amplitude, t) : startingY, val.localPosition.z);
+			}
+		}
+	}
+	internal class HoarderBudSpawnerPatches
+	{
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_Awake <0>__CopyOriginalAssets;
+
+			public static hook_Start <1>__GameNetworkManager_Start;
+		}
+
+		public static bool enabled = true;
+
+		public static int SpawnerItemPrice = 30;
+
+		private static GameObject HoarderBugModel = null;
+
+		private static Item HoarderBugSpawnerItem;
+
+		private static ManualLogSource mls => HoarderBudPlugin.mls;
+
+		public static void Apply()
+		{
+			//IL_00f8: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00fd: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0103: Expected O, but got Unknown
+			//IL_0119: Unknown result type (might be due to invalid IL or missing references)
+			//IL_011e: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0124: Expected O, but got Unknown
+			string[] manifestResourceNames = Assembly.GetExecutingAssembly().GetManifestResourceNames();
+			foreach (string text in manifestResourceNames)
+			{
+				mls.LogInfo((object)("Found resource called " + text));
+			}
+			AssetBundle val = AssetBundle.LoadFromStream(Assembly.GetExecutingAssembly().GetManifestResourceStream(Assembly.GetExecutingAssembly().GetManifestResourceNames()[0]));
+			string[] allAssetNames = val.GetAllAssetNames();
+			foreach (string text2 in allAssetNames)
+			{
+				mls.LogInfo((object)("Found asset " + text2));
+			}
+			HoarderBugSpawnerItem = val.LoadAsset<Item>("assets/templates/bang/hoarderspawner.asset");
+			if ((Object)(object)HoarderBugSpawnerItem == (Object)null)
+			{
+				mls.LogError((object)"asset is null");
+			}
+			Utilities.FixMixerGroups(HoarderBugSpawnerItem.spawnPrefab);
+			HoarderBugSpawnerItem.isScrap = false;
+			HoarderBugSpawnerItem.creditsWorth = 0;
+			object obj = <>O.<0>__CopyOriginalAssets;
+			if (obj == null)
+			{
+				hook_Awake val2 = CopyOriginalAssets;
+				<>O.<0>__CopyOriginalAssets = val2;
+				obj = (object)val2;
+			}
+			StartOfRound.Awake += (hook_Awake)obj;
+			object obj2 = <>O.<1>__GameNetworkManager_Start;
+			if (obj2 == null)
+			{
+				hook_Start val3 = GameNetworkManager_Start;
+				<>O.<1>__GameNetworkManager_Start = val3;
+				obj2 = (object)val3;
+			}
+			GameNetworkManager.Start += (hook_Start)obj2;
+		}
+
+		private static void GameNetworkManager_Start(orig_Start orig, GameNetworkManager self)
+		{
+			orig.Invoke(self);
+			NetworkManager.Singleton.AddNetworkPrefab(HoarderBugSpawnerItem.spawnPrefab);
+		}
+
+		public static void UpdateItem()
+		{
+			if (enabled)
+			{
+				if (Items.shopItems.Any((ShopItem item) => (Object)(object)item.item == (Object)(object)HoarderBugSpawnerItem))
+				{
+					Items.UpdateShopItemPrice(HoarderBugSpawnerItem, SpawnerItemPrice);
+				}
+				else
+				{
+					Items.RegisterShopItem(HoarderBugSpawnerItem, SpawnerItemPrice);
+				}
+			}
+			else if (Items.shopItems.Any((ShopItem item) => (Object)(object)item.item == (Object)(object)HoarderBugSpawnerItem))
+			{
+				Items.RemoveShopItem(HoarderBugSpawnerItem);
+			}
+		}
+
+		private static void CopyOriginalAssets(orig_Awake orig, StartOfRound startOfRound)
+		{
+			//IL_0134: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0139: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0142: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0147: Unknown result type (might be due to invalid IL or missing references)
+			//IL_02ba: Unknown result type (might be due to invalid IL or missing references)
+			//IL_02d3: Unknown result type (might be due to invalid IL or missing references)
+			//IL_02e4: Unknown result type (might be due to invalid IL or missing references)
+			//IL_02fb: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0305: Unknown result type (might be due to invalid IL or missing references)
+			bool flag = false;
+			bool flag2 = false;
+			foreach (Item items in startOfRound.allItemsList.itemsList)
+			{
+				mls.LogDebug((object)("Item name: " + items.itemName));
+				if (items.itemName == "Jar of pickles" && !flag)
+				{
+					HoarderBugSpawnerItem.dropSFX = items.dropSFX;
+					HoarderBugSpawnerItem.grabSFX = items.grabSFX;
+					HoarderBugSpawnerItem.pocketSFX = items.pocketSFX;
+					HoarderBugSpawnerItem.itemIcon = items.itemIcon;
+					flag = true;
+				}
+				if (items.itemName == "Stun grenade" && !flag2)
+				{
+					HoarderBugSpawnerItem.throwSFX = items.throwSFX;
+					ThrowableItemComponent component = HoarderBugSpawnerItem.spawnPrefab.GetComponent<ThrowableItemComponent>();
+					StunGrenadeItem component2 = items.spawnPrefab.GetComponent<StunGrenadeItem>();
+					mls.LogDebug((object)("Throwable is null? " + ((Object)(object)component == (Object)null) + "Stun is null? " + ((Object)(object)component2 == (Object)null)));
+					component.grenadeHit = component2.grenadeHit;
+					component.grenadeThrowRay = component2.grenadeThrowRay;
+					component.grenadeFallCurve = component2.grenadeFallCurve;
+					component.grenadeVerticalFallCurve = component2.grenadeVerticalFallCurve;
+					component.grenadeVerticalFallCurveNoBounce = component2.grenadeVerticalFallCurveNoBounce;
+					flag2 = true;
+				}
+				if (flag2 && flag)
+				{
+					break;
+				}
+			}
+			SelectableLevel[] levels = startOfRound.levels;
+			foreach (SelectableLevel val in levels)
+			{
+				if ((Object)(object)HoarderBugModel != (Object)null)
+				{
+					break;
+				}
+				foreach (SpawnableEnemyWithRarity enemy in val.Enemies)
+				{
+					if (!(((Object)enemy.enemyType).name == "HoarderBug"))
+					{
+						continue;
+					}
+					HoarderBugModel = ((Component)enemy.enemyType.enemyPrefab.transform.Find("HoarderBugModel")).gameObject;
+					if ((Object)(object)ThrowableItemComponent.HoarderType == (Object)null)
+					{
+						ThrowableItemComponent.HoarderType = enemy.enemyType;
+					}
+					if ((Object)(object)HoarderBugModel == (Object)null)
+					{
+						HoarderBudPlugin.mls.LogError((object)"model not found in bug");
+						break;
+					}
+					GameObject val2 = Object.Instantiate<GameObject>(HoarderBugModel);
+					val2.transform.parent = HoarderBugSpawnerItem.spawnPrefab.transform;
+					val2.transform.localScale = new Vector3(0.025f, 0.025f, 0.025f);
+					val2.transform.localPosition = new Vector3(val2.transform.localPosition.x, val2.transform.localPosition.y + 0.1f, val2.transform.localPosition.z);
+					for (int j = 0; j < val2.transform.childCount; j++)
+					{
+						try
+						{
+							Object.Destroy((Object)(object)((Component)val2.transform.GetChild(j)).gameObject.GetComponent<EnemyAICollisionDetect>());
+						}
+						catch (Exception)
+						{
+						}
+					}
+					Object.Destroy((Object)(object)val2.GetComponent<EnemyAICollisionDetect>());
+					break;
+				}
+			}
+			orig.Invoke(startOfRound);
+		}
+	}
+	internal class HoarderBugPatches
+	{
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_LoadNewLevelWait <0>__RoundManager_LoadNewLevelWait;
+
+			public static hook_SetBigDoorCodes <1>__RoundManager_SetBigDoorCodes;
+
+			public static hook_SyncNestPositionServerRpc <2>__ReplaceNestWithEntrance;
+
+			public static hook_IsHoarderBugAngry <3>__DontBeAngry;
+		}
+
+		public static Vector3 properNest = new Vector3(-12.17f, -219.56f, 65.56f);
+
+		public static Dictionary<int, Vector3> nests = new Dictionary<int, Vector3>();
+
+		public static bool MakeBugsFriendly = true;
+
+		public static bool MakeBugsGatherAtMainEntrance = true;
+
+		public static void Apply()
+		{
+			//IL_0011: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0016: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001c: Expected O, but got Unknown
+			//IL_0032: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0037: Unknown result type (might be due to invalid IL or missing references)
+			//IL_003d: Expected O, but got Unknown
+			//IL_0053: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0058: Unknown result type (might be due to invalid IL or missing references)
+			//IL_005e: Expected O, but got Unknown
+			//IL_0074: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0079: Unknown result type (might be due to invalid IL or missing references)
+			//IL_007f: Expected O, but got Unknown
+			object obj = <>O.<0>__RoundManager_LoadNewLevelWait;
+			if (obj == null)
+			{
+				hook_LoadNewLevelWait val = RoundManager_LoadNewLevelWait;
+				<>O.<0>__RoundManager_LoadNewLevelWait = val;
+				obj = (object)val;
+			}
+			RoundManager.LoadNewLevelWait += (hook_LoadNewLevelWait)obj;
+			object obj2 = <>O.<1>__RoundManager_SetBigDoorCodes;
+			if (obj2 == null)
+			{
+				hook_SetBigDoorCodes val2 = RoundManager_SetBigDoorCodes;
+				<>O.<1>__RoundManager_SetBigDoorCodes = val2;
+				obj2 = (object)val2;
+			}
+			RoundManager.SetBigDoorCodes += (hook_SetBigDoorCodes)obj2;
+			object obj3 = <>O.<2>__ReplaceNestWithEntrance;
+			if (obj3 == null)
+			{
+				hook_SyncNestPositionServerRpc val3 = ReplaceNestWithEntrance;
+				<>O.<2>__ReplaceNestWithEntrance = val3;
+				obj3 = (object)val3;
+			}
+			HoarderBugAI.SyncNestPositionServerRpc += (hook_SyncNestPositionServerRpc)obj3;
+			object obj4 = <>O.<3>__DontBeAngry;
+			if (obj4 == null)
+			{
+				hook_IsHoarderBugAngry val4 = DontBeAngry;
+				<>O.<3>__DontBeAngry = val4;
+				obj4 = (object)val4;
+			}
+			HoarderBugAI.IsHoarderBugAngry += (hook_IsHoarderBugAngry)obj4;
+		}
+
+		private static bool DontBeAngry(orig_IsHoarderBugAngry orig, HoarderBugAI self)
+		{
+			//IL_0039: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0061: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0066: Unknown result type (might be due to invalid IL or missing references)
+			//IL_006b: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0070: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0081: Unknown result type (might be due to invalid IL or missing references)
+			if (!MakeBugsFriendly)
+			{
+				return orig.Invoke(self);
+			}
+			self.angryAtPlayer = null;
+			if (!((EnemyAI)self).isOutside)
+			{
+				self.nestPosition = nests.GetValueOrDefault(((Object)self).GetInstanceID(), properNest + new Vector3(Random.Range(-2f, 2f), 0f, Random.Range(-2f, 2f)));
+				nests[((Object)self).GetInstanceID()] = self.nestPosition;
+			}
+			return false;
+		}
+
+		private static void ReplaceNestWithEntrance(orig_SyncNestPositionServerRpc orig, HoarderBugAI self, Vector3 newNestPosition)
+		{
+			//IL_00a8: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0018: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001d: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0050: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0078: Unknown result type (might be due to invalid IL or missing references)
+			//IL_007d: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0082: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0087: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0098: Unknown result type (might be due to invalid IL or missing references)
+			if (MakeBugsGatherAtMainEntrance)
+			{
+				ManualLogSource mls = HoarderBudPlugin.mls;
+				Vector3 val = properNest;
+				mls.LogDebug((object)("pre synced nest " + ((object)(Vector3)(ref val)).ToString()));
+				if (!((EnemyAI)self).isOutside)
+				{
+					self.nestPosition = nests.GetValueOrDefault(((Object)self).GetInstanceID(), properNest + new Vector3(Random.Range(-2f, 2f), 0f, Random.Range(-2f, 2f)));
+					nests[((Object)self).GetInstanceID()] = self.nestPosition;
+				}
+			}
+			orig.Invoke(self, self.nestPosition);
+		}
+
+		private static void RoundManager_SetBigDoorCodes(orig_SetBigDoorCodes orig, RoundManager self, Vector3 mainEntrancePosition)
+		{
+			//IL_0003: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0022: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0023: Unknown result type (might be due to invalid IL or missing references)
+			//IL_003c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_004c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0051: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0056: Unknown result type (might be due to invalid IL or missing references)
+			orig.Invoke(self, mainEntrancePosition);
+			if (MakeBugsGatherAtMainEntrance)
+			{
+				ManualLogSource mls = HoarderBudPlugin.mls;
+				Vector3 val = mainEntrancePosition;
+				mls.LogDebug((object)("SetBigDoorCodes: expected main entrance: " + ((object)(Vector3)(ref val)).ToString()));
+				properNest = mainEntrancePosition + new Vector3(5f, -1.4f, 0f);
+			}
+		}
+
+		private static IEnumerator RoundManager_LoadNewLevelWait(orig_LoadNewLevelWait orig, RoundManager self, int randomSeed)
+		{
+			nests = new Dictionary<int, Vector3>();
+			return orig.Invoke(self, randomSeed);
+		}
+	}
+	internal class OpenAllDoorsPatches
+	{
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_SetBigDoorCodes <0>__RoundManager_SetBigDoorCodes;
+		}
+
+		public static bool enabled = true;
+
+		public static void Apply()
+		{
+			//IL_0011: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0016: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001c: Expected O, but got Unknown
+			object obj = <>O.<0>__RoundManager_SetBigDoorCodes;
+			if (obj == null)
+			{
+				hook_SetBigDoorCodes val = RoundManager_SetBigDoorCodes;
+				<>O.<0>__RoundManager_SetBigDoorCodes = val;
+				obj = (object)val;
+			}
+			RoundManager.SetBigDoorCodes += (hook_SetBigDoorCodes)obj;
+		}
+
+		private static void RoundManager_SetBigDoorCodes(orig_SetBigDoorCodes orig, RoundManager self, Vector3 mainEntrancePosition)
+		{
+			//IL_0003: Unknown result type (might be due to invalid IL or missing references)
+			orig.Invoke(self, mainEntrancePosition);
+			if (enabled)
+			{
+				TerminalAccessibleObject[] array = (from door in Object.FindObjectsOfType<TerminalAccessibleObject>()
+					where door.isBigDoor
+					select door).ToArray();
+				for (int i = 0; i < array.Length; i++)
+				{
+					array[i].SetDoorOpen(true);
+				}
+			}
+		}
+	}
+	internal class RemoveInsideMobsPatches
+	{
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_AssignRandomEnemyToVent <0>__RoundManager_AssignRandomEnemyToVent;
+
+			public static hook_AdvanceHourAndSpawnNewBatchOfEnemies <1>__RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies;
+		}
+
+		public static bool enabled = true;
+
+		public static void Apply()
+		{
+			//IL_0011: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0016: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001c: Expected O, but got Unknown
+			//IL_0032: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0037: Unknown result type (might be due to invalid IL or missing references)
+			//IL_003d: Expected O, but got Unknown
+			object obj = <>O.<0>__RoundManager_AssignRandomEnemyToVent;
+			if (obj == null)
+			{
+				hook_AssignRandomEnemyToVent val = RoundManager_AssignRandomEnemyToVent;
+				<>O.<0>__RoundManager_AssignRandomEnemyToVent = val;
+				obj = (object)val;
+			}
+			RoundManager.AssignRandomEnemyToVent += (hook_AssignRandomEnemyToVent)obj;
+			object obj2 = <>O.<1>__RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies;
+			if (obj2 == null)
+			{
+				hook_AdvanceHourAndSpawnNewBatchOfEnemies val2 = RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies;
+				<>O.<1>__RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies = val2;
+				obj2 = (object)val2;
+			}
+			RoundManager.AdvanceHourAndSpawnNewBatchOfEnemies += (hook_AdvanceHourAndSpawnNewBatchOfEnemies)obj2;
+		}
+
+		private static bool RoundManager_AssignRandomEnemyToVent(orig_AssignRandomEnemyToVent orig, RoundManager self, EnemyVent vent, float spawnTime)
+		{
+			if (!enabled)
+			{
+				return orig.Invoke(self, vent, spawnTime);
+			}
+			int num = 0;
+			bool flag = false;
+			for (int i = 0; i < self.currentLevel.Enemies.Count; i++)
+			{
+				if (((Object)self.currentLevel.Enemies[i].enemyType).name == "HoarderBug")
+				{
+					num = i;
+					flag = true;
+				}
+				else
+				{
+					self.currentLevel.Enemies[i].rarity = 0;
+				}
+			}
+			if (!flag)
+			{
+				return orig.Invoke(self, vent, spawnTime);
+			}
+			self.currentEnemyPower += self.currentLevel.Enemies[num].enemyType.PowerLevel;
+			vent.enemyType = self.currentLevel.Enemies[num].enemyType;
+			vent.enemyTypeIndex = num;
+			vent.occupied = true;
+			vent.spawnTime = spawnTime;
+			EnemyType enemyType = self.currentLevel.Enemies[num].enemyType;
+			enemyType.numberSpawned++;
+			return true;
+		}
+
+		private static void RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies(orig_AdvanceHourAndSpawnNewBatchOfEnemies orig, RoundManager self)
+		{
+			orig.Invoke(self);
+			if (enabled)
+			{
+				RoundManager.Instance.currentLevel.maxEnemyPowerCount = int.MaxValue;
+				if (RoundManager.Instance.minEnemiesToSpawn < 5)
+				{
+					RoundManager.Instance.minEnemiesToSpawn = 5;
+				}
+			}
+		}
+	}
+	internal class RemoveOutsideMobsPatches
+	{
+		[CompilerGenerated]
+		private static class <>O
+		{
+			public static hook_LoadNewLevelWait <0>__RoundManager_LoadNewLevelWait;
+
+			public static hook_AdvanceHourAndSpawnNewBatchOfEnemies <1>__RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies;
+		}
+
+		public static bool enabled = true;
+
+		public static void Apply()
+		{
+			//IL_0011: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0016: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001c: Expected O, but got Unknown
+			//IL_0032: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0037: Unknown result type (might be due to invalid IL or missing references)
+			//IL_003d: Expected O, but got Unknown
+			object obj = <>O.<0>__RoundManager_LoadNewLevelWait;
+			if (obj == null)
+			{
+				hook_LoadNewLevelWait val = RoundManager_LoadNewLevelWait;
+				<>O.<0>__RoundManager_LoadNewLevelWait = val;
+				obj = (object)val;
+			}
+			RoundManager.LoadNewLevelWait += (hook_LoadNewLevelWait)obj;
+			object obj2 = <>O.<1>__RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies;
+			if (obj2 == null)
+			{
+				hook_AdvanceHourAndSpawnNewBatchOfEnemies val2 = RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies;
+				<>O.<1>__RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies = val2;
+				obj2 = (object)val2;
+			}
+			RoundManager.AdvanceHourAndSpawnNewBatchOfEnemies += (hook_AdvanceHourAndSpawnNewBatchOfEnemies)obj2;
+		}
+
+		private static void RoundManager_AdvanceHourAndSpawnNewBatchOfEnemies(orig_AdvanceHourAndSpawnNewBatchOfEnemies orig, RoundManager self)
+		{
+			if (enabled)
+			{
+				RoundManager.Instance.currentLevel.maxOutsideEnemyPowerCount = 0;
+			}
+			orig.Invoke(self);
+		}
+
+		private static IEnumerator RoundManager_LoadNewLevelWait(orig_LoadNewLevelWait orig, RoundManager self, int randomSeed)
+		{
+			if (!enabled)
+			{
+				return orig.Invoke(self, randomSeed);
+			}
+			IEnumerator result = orig.Invoke(self, randomSeed);
+			if ((Object)(object)self.currentLevel != (Object)null)
+			{
+				self.currentLevel.maxOutsideEnemyPowerCount = 0;
+			}
+			return result;
+		}
+	}
+}
+namespace HoarderBud.Components
+{
+	internal class ThrowableItemComponent : PhysicsProp
+	{
+		public RaycastHit grenadeHit;
+
+		public Ray grenadeThrowRay;
+
+		public AnimationCurve grenadeFallCurve;
+
+		public AnimationCurve grenadeVerticalFallCurve;
+
+		public AnimationCurve grenadeVerticalFallCurveNoBounce;
+
+		public bool wasThrown = false;
+
+		public static EnemyType HoarderType;
+
+		public override void ItemActivate(bool used, bool buttonDown = true)
+		{
+			//IL_0089: Unknown result type (might be due to invalid IL or missing references)
+			((GrabbableObject)this).ItemActivate(used, buttonDown);
+			HoarderBudPlugin.mls.LogInfo((object)("IsHost:" + NetworkManager.Singleton.IsHost + " IsOwner: " + ((NetworkBehaviour)this).IsOwner));
+			if (((NetworkBehaviour)this).IsOwner || NetworkManager.Singleton.IsHost)
+			{
+				if (((GrabbableObject)this).playerHeldBy.isInsideFactory || HoarderBudPlugin.HasLethalEscape)
+				{
+					wasThrown = true;
+				}
+				((GrabbableObject)this).playerHeldBy.DiscardHeldObject(true, (NetworkObject)null, GetGrenadeThrowDestination(), true);
+			}
+		}
+
+		public override void FallWithCurve()
+		{
+			//IL_0002: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0008: Unknown result type (might be due to invalid IL or missing references)
+			//IL_000d: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0012: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0027: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0042: Unknown result type (might be due to invalid IL or missing references)
+			//IL_005c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_006e: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0080: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0086: Unknown result type (might be due to invalid IL or missing references)
+			//IL_009c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_014c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0167: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0171: Unknown result type (might be due to invalid IL or missing references)
+			//IL_017c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0197: Unknown result type (might be due to invalid IL or missing references)
+			//IL_01a1: Unknown result type (might be due to invalid IL or missing references)
+			//IL_01b7: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00c3: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00de: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00e8: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00f3: Unknown result type (might be due to invalid IL or missing references)
+			//IL_010e: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0118: Unknown result type (might be due to invalid IL or missing references)
+			//IL_012e: Unknown result type (might be due to invalid IL or missing references)
+			Vector3 val = ((GrabbableObject)this).startFallingPosition - ((GrabbableObject)this).targetFloorPosition;
+			float magnitude = ((Vector3)(ref val)).magnitude;
+			((Component)this).transform.rotation = Quaternion.Lerp(((Component)this).transform.rotation, Quaternion.Euler(((GrabbableObject)this).itemProperties.restingRotation.x, ((Component)this).transform.eulerAngles.y, ((GrabbableObject)this).itemProperties.restingRotation.z), 14f * Time.deltaTime / magnitude);
+			((Component)this).transform.localPosition = Vector3.Lerp(((GrabbableObject)this).startFallingPosition, ((GrabbableObject)this).targetFloorPosition, grenadeFallCurve.Evaluate(((GrabbableObject)this).fallTime));
+			if (magnitude > 5f)
+			{
+				((Component)this).transform.localPosition = Vector3.Lerp(new Vector3(((Component)this).transform.localPosition.x, ((GrabbableObject)this).startFallingPosition.y, ((Component)this).transform.localPosition.z), new Vector3(((Component)this).transform.localPosition.x, ((GrabbableObject)this).targetFloorPosition.y, ((Component)this).transform.localPosition.z), grenadeVerticalFallCurveNoBounce.Evaluate(((GrabbableObject)this).fallTime));
+			}
+			else
+			{
+				((Component)this).transform.localPosition = Vector3.Lerp(new Vector3(((Component)this).transform.localPosition.x, ((GrabbableObject)this).startFallingPosition.y, ((Component)this).transform.localPosition.z), new Vector3(((Component)this).transform.localPosition.x, ((GrabbableObject)this).targetFloorPosition.y, ((Component)this).transform.localPosition.z), grenadeVerticalFallCurve.Evaluate(((GrabbableObject)this).fallTime));
+			}
+			((GrabbableObject)this).fallTime = ((GrabbableObject)this).fallTime + Mathf.Abs(Time.deltaTime * 12f / magnitude);
+			if (((GrabbableObject)this).fallTime > 1f && wasThrown)
+			{
+				HoarderBudPlugin.mls.LogInfo((object)"Stopped rolling");
+				if (NetworkManager.Singleton.IsHost)
+				{
+					SpawnBug();
+				}
+				Object.Destroy((Object)(object)((Component)this).gameObject);
+			}
+		}
+
+		public Vector3 GetGrenadeThrowDestination()
+		{
+			//IL_0007: Unknown result type (might be due to invalid IL or missing references)
+			//IL_000c: Unknown result type (might be due to invalid IL or missing references)
+			//IL_001d: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0032: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0037: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0058: Unknown result type (might be due to invalid IL or missing references)
+			//IL_006d: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0072: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0077: Unknown result type (might be due to invalid IL or missing references)
+			//IL_007d: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00c7: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00b5: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00cc: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00cd: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00ce: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00d3: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00e4: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00e5: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00ea: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00ef: Unknown result type (might be due to invalid IL or missing references)
+			//IL_00f5: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0146: Unknown result type (might be due to invalid IL or missing references)
+			//IL_014b: Unknown result type (might be due to invalid IL or missing references)
+			//IL_011f: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0124: Unknown result type (might be due to invalid IL or missing references)
+			//IL_012e: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0133: Unknown result type (might be due to invalid IL or missing references)
+			//IL_0138: Unknown result type (might be due to invalid IL or missing references)
+			//IL_014e: Unknown result type (might be due to invalid IL or missing references)
+			Vector3 position = ((Component)this).transform.position;
+			Debug.DrawRay(((Component)((GrabbableObject)this).playerHeldBy.gameplayCamera).transform.position, ((Component)((GrabbableObject)this).playerHeldBy.gameplayCamera).transform.forward, Color.yellow, 15f);
+			grenadeThrowRay = new Ray(((Component)((GrabbableObject)this).playerHeldBy.gameplayCamera).transform.position, ((Component)((GrabbableObject)this).playerHeldBy.gameplayCamera).transform.forward);
+			position = ((!Physics.Raycast(grenadeThrowRay, ref grenadeHit, 12f, StartOfRound.Instance.collidersAndRoomMaskAndDefault)) ? ((Ray)(ref grenadeThrowRay)).GetPoint(10f) : ((Ray)(ref grenadeThrowRay)).GetPoint(((RaycastHit)(ref grenadeHit)).distance - 0.05f));
+			Debug.DrawRay(position, Vector3.down, Color.blue, 15f);
+			grenadeThrowRay = new Ray(position, Vector3.down);
+			if (Physics.Raycast(grenadeThrowRay, ref grenadeHit, 30f, StartOfRound.Instance.collidersAndRoomMaskAndDefault))
+			{
+				return ((RaycastHit)(ref grenadeHit)).point + Vector3.up * 0.05f;
+			}
+			return ((Ray)(ref grenadeThrowRay)).GetPoint(30f);
+		}
+
+		private void SpawnBug()
+		{
+			//IL_002e: Unknown result type (might be due to invalid IL or missing references)
+			//IL_003e: Unknown result type (might be due to invalid IL or missing references)
+			if ((Object)(object)HoarderType == (Object)null)
+			{
+				HoarderBudPlugin.mls.LogError((object)"BUG IS NOT PRESENT");
+			}
+			else
+			{
+				RoundManager.Instance.SpawnEnemyGameObject(((Component)this).transform.position, 0f, -1, HoarderType);
+			}
+		}
+	}
+}
